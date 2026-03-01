@@ -152,6 +152,8 @@ def parse_observer(d: date) -> List[Event]:
             continue
 
         title = a.get_text(" ", strip=True)
+        if "looking for live music" in title.lower():
+            continue
         href = urljoin(url, a["href"]) if a.has_attr("href") else ""
 
         # The event time is usually in the preceding text near the title (e.g., "8:00 am" line)
