@@ -15,6 +15,7 @@ Email config:
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import smtplib
@@ -117,11 +118,61 @@ def parse_aadl(d: date) -> List[Event]:
         m = re.search(r":\s*([0-9]{1,2}:[0-9]{2}(?:am|pm))\s*to\s*([0-9]{1,2}:[0-9]{2}(?:am|pm))", text, re.I)
         when = f"{m.group(1)}–{m.group(2)}" if m else "Time listed on page"
 
-        # location often appears like "Westgate Branch: West Side Room"
+        # Try to extract location from explicit fields first (more reliable than regex).
+        def field_text(class_keywords: Iterable[str]) -> str:
+            for el in block.find_all(True):
+                classes = " ".join(el.get("class", []))
+                if any(k in classes for k in class_keywords):
+                    t = el.get_text(" ", strip=True)
+                    if t:
+                        return t
+            return ""
+
         loc = ""
-        m2 = re.search(r"\.\s*([A-Za-z0-9’'&\-\s]+Branch|Downtown Library|Pittsfield Branch|Traverwood Branch|Malletts Creek Branch)\s*:\s*([^\.]+)\.", text)
-        if m2:
-            loc = f"{m2.group(1)}: {m2.group(2).strip()}"
+        branch = field_text(["field--name-field-branch", "field--name-field-location"])
+        room = field_text(["field--name-field-room"])
+
+        if branch or room:
+            if branch and room and room not in branch:
+                loc = f"{branch}: {room}"
+            else:
+                loc = branch or room
+
+        if not loc:
+            # AADL pages often put branch info on the line after the date/time line.
+            # Example:
+            # "Monday March 2, 2026: 10:30am to 11:00am."
+            # "Pittsfield Branch: Program Room"
+            lines = [ln.strip() for ln in block.get_text("\n", strip=True).split("\n") if ln.strip()]
+            date_line_idx = None
+            for i, ln in enumerate(lines):
+                if tok["aadl_line"] in ln:
+                    date_line_idx = i
+                    break
+
+            if date_line_idx is not None:
+                time_re = re.compile(r"^\s*([0-9]{1,2}:[0-9]{2}(?:am|pm))(\s*to\s*([0-9]{1,2}:[0-9]{2}(?:am|pm)))?\s*\.?$", re.I)
+                loc_re = re.compile(r"(Branch|Library|Downtown|Traverwood|Pittsfield|Westgate|Malletts Creek)", re.I)
+
+                # Look forward from the date line, skipping time-only lines.
+                for j in range(date_line_idx + 1, min(date_line_idx + 5, len(lines))):
+                    cand = lines[j]
+                    if time_re.search(cand):
+                        continue
+                    cand_clean = re.sub(r"^(Location|Branch|Library)\s*:\s*", "", cand, flags=re.I).strip()
+                    if loc_re.search(cand_clean) or cand_clean:
+                        loc = cand_clean
+                        break
+
+        if not loc:
+            # regex fallbacks for older patterns
+            m2 = re.search(r"\.\s*([A-Za-z0-9’'&\-\s]+Branch|Downtown Library|Pittsfield Branch|Traverwood Branch|Malletts Creek Branch)\s*:\s*([^\.]+)\.", text)
+            if m2:
+                loc = f"{m2.group(1)}: {m2.group(2).strip()}"
+            else:
+                m3 = re.search(r"(?:Location|Branch|Library)\s*:\s*([^\.]+)\.", text, re.I)
+                if m3:
+                    loc = m3.group(1).strip()
 
         # de-dup by (title, when)
         e = Event(source="AADL", title=title, when=when, location=loc, url=href)
@@ -215,6 +266,76 @@ def parse_aawk(d: date) -> List[Event]:
     if not table:
         return []
 
+    def clean_location(text: str) -> str:
+        text = re.sub(r"^(Location|Venue)\s*:\s*", "", text, flags=re.I).strip()
+        text = re.sub(r"\s*\|\s*", " ", text)
+        return text.strip(" -")
+
+    def extract_row_location(cells: List[BeautifulSoup]) -> str:
+        # Try explicit venue/location fields in the row first.
+        class_keywords = [
+            "tribe-events-venue",
+            "tribe-event-venue",
+            "event-venue",
+            "event-location",
+            "location",
+            "venue",
+        ]
+        for cell in cells:
+            for el in cell.find_all(True):
+                classes = " ".join(el.get("class", []))
+                if any(k in classes for k in class_keywords):
+                    t = el.get_text(" ", strip=True)
+                    if t:
+                        return clean_location(t)
+
+        # Fallback: look for "Location:" or "Venue:" label in cell text
+        for cell in cells:
+            text = " ".join(cell.stripped_strings)
+            m = re.search(r"(?:Location|Venue)\s*:\s*(.+)", text, re.I)
+            if m:
+                return clean_location(m.group(1))
+        return ""
+
+    def fetch_aawk_location(event_url: str) -> str:
+        try:
+            event_html = fetch(event_url)
+        except Exception:
+            return ""
+        event_soup = BeautifulSoup(event_html, "html.parser")
+
+        # The Events Calendar markup (common on AAWK)
+        name_el = event_soup.select_one(
+            ".tribe-events-venue-details .tribe-venue-name, "
+            ".tribe-events-meta-group-venue .tribe-venue-name, "
+            ".tribe-events-venue-details .tribe-venue"
+        )
+        name = name_el.get_text(" ", strip=True) if name_el else ""
+
+        addr_parts = []
+        for sel in [".tribe-street-address", ".tribe-locality", ".tribe-region", ".tribe-postal-code"]:
+            el = event_soup.select_one(sel)
+            if el:
+                t = el.get_text(" ", strip=True)
+                if t:
+                    addr_parts.append(t)
+        addr = ", ".join(addr_parts)
+
+        if name and addr:
+            return clean_location(f"{name}, {addr}")
+        if name:
+            return clean_location(name)
+        if addr:
+            return clean_location(addr)
+
+        venue = event_soup.select_one(".tribe-events-venue-details")
+        if venue:
+            text = venue.get_text(" ", strip=True)
+            text = re.sub(r"\b(Phone|Website|Directions)\b:\s*\S+", "", text, flags=re.I)
+            return clean_location(text)
+
+        return ""
+
     events: List[Event] = []
     for row in table.find_all("tr"):
         cells = row.find_all("td")
@@ -251,7 +372,11 @@ def parse_aawk(d: date) -> List[Event]:
                 when = m.group(1)
                 break
 
-        events.append(Event(source="Ann Arbor With Kids", title=title, when=when, location="", url=href))
+        location = extract_row_location(cells)
+        if not location and href and href.startswith("https://annarborwithkids.com/events/"):
+            location = fetch_aawk_location(href)
+
+        events.append(Event(source="Ann Arbor With Kids", title=title, when=when, location=location, url=href))
 
     return events
 
@@ -327,6 +452,22 @@ def maybe_send_email(subject: str, body: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Ann Arbor daily events digest")
+    parser.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help="Date to fetch events for (default: today)",
+    )
+    args = parser.parse_args()
+
+    if args.date:
+        try:
+            d = date.fromisoformat(args.date)
+        except ValueError:
+            parser.error(f"Invalid date '{args.date}'. Use YYYY-MM-DD format.")
+    else:
+        d = datetime.now(TZ).date()
+
     # Skip everything if email is disabled
     if os.getenv("EMAIL_ENABLED", "true").lower() != "true":
         print("Email disabled — skipping.")
@@ -337,8 +478,6 @@ def main() -> None:
         if not is_in_ann_arbor():
             print("Not in Ann Arbor area — skipping.")
             return
-
-    d = datetime.now(TZ).date()
     events: List[Event] = []
     events += parse_aadl(d)
     events += parse_observer(d)
