@@ -369,6 +369,12 @@ def main() -> None:
     digest = format_digest(d, events)
     print(digest)
 
+    if os.getenv("EMAIL_ENABLED", "true").lower() == "true":
+        maybe_send_email(
+            subject=f"Today in East Lansing: {d.strftime('%a %b %d')}",
+            body=digest,
+        )
+
 
 if __name__ == "__main__":
     main()

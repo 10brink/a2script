@@ -1,40 +1,72 @@
 # a2script
 
-Daily Ann Arbor events digest delivered to your inbox.
+Small Python scrapers that build daily local event digests and optionally email them through SMTP.
 
-Scrapes events from:
-- [AADL](https://aadl.org/events-feed/upcoming) (Ann Arbor District Library)
-- [Ann Arbor Observer](https://annarborobserver.com/calendar/)
-- [Ann Arbor With Kids](https://annarborwithkids.com/events/)
+This repo currently includes two scripts:
+
+- `aascript.py`: Ann Arbor events from AADL, Ann Arbor Observer, and Ann Arbor With Kids
+- `elscript.py`: East Lansing toddler events from CADL, ELPL, and 517 Living
+
+## Requirements
+
+Install dependencies:
+
+```bash
+pip install requests beautifulsoup4 python-dateutil pytz python-dotenv
+```
 
 ## Setup
 
-1. Install dependencies:
-   ```bash
-   pip install requests beautifulsoup4 python-dateutil pytz python-dotenv
-   ```
+Copy `.env.example` to `.env` and fill in your SMTP settings:
 
-2. Copy `.env.example` to `.env` and fill in your Gmail credentials:
-   ```bash
-   cp .env.example .env
-   ```
+```bash
+cp .env.example .env
+```
 
-3. Generate a Gmail app-specific password at https://myaccount.google.com/apppasswords
+If you use Gmail, generate an app-specific password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 
 ## Usage
 
-Run manually:
+Run the Ann Arbor digest for today:
+
 ```bash
 python3 aascript.py
 ```
 
-Or schedule with launchd (macOS) or cron.
+Run the East Lansing digest for today:
+
+```bash
+python3 elscript.py
+```
+
+Fetch a specific date with either script:
+
+```bash
+python3 aascript.py --date 2026-05-05
+python3 elscript.py --date 2026-05-05
+```
+
+Both scripts print the digest to stdout. If email is enabled and SMTP is configured, they also send it by email.
 
 ## Configuration
 
-| Variable | Description |
-|----------|-------------|
-| `EMAIL_ENABLED` | Set to `false` to disable emails entirely |
-| `FORCE_SEND` | Set to `true` to send regardless of location |
+Both scripts load `.env` from the repository root and share the same SMTP settings.
 
-The script checks your IP location and only sends when you're in the Ann Arbor area. Use `FORCE_SEND=true` when you're away but still want the digest.
+| Variable | Default | Used By | Purpose |
+|---|---|---|---|
+| `EMAIL_ENABLED` | `true` | both | Set to `false` to skip email sending |
+| `FORCE_SEND` | `false` | `aascript.py` | Bypass the Ann Arbor geo-check |
+| `SMTP_HOST` | `smtp.gmail.com` | both | SMTP host |
+| `SMTP_PORT` | `587` | both | SMTP port |
+| `SMTP_USER` | none | both | SMTP username |
+| `SMTP_PASS` | none | both | SMTP password or Gmail app password |
+| `FROM_EMAIL` | none | both | Sender address |
+| `TO_EMAIL` | none | both | Comma-separated recipient list |
+
+## Behavior Notes
+
+`aascript.py` only sends when `EMAIL_ENABLED=true` and your IP appears to be in the Ann Arbor area, unless `FORCE_SEND=true`.
+
+`elscript.py` has no location check. It always builds the digest, prints it, and sends email when `EMAIL_ENABLED=true` and SMTP is configured.
+
+If SMTP settings are missing, both scripts still print the digest and silently skip sending email.
