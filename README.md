@@ -12,7 +12,7 @@ This repo currently includes two scripts:
 Install dependencies:
 
 ```bash
-pip install requests beautifulsoup4 python-dateutil pytz python-dotenv
+python3 -m pip install requests beautifulsoup4 python-dateutil pytz python-dotenv streamlit
 ```
 
 ## Setup
@@ -39,6 +39,12 @@ Run the East Lansing digest for today:
 python3 elscript.py
 ```
 
+Run the GUI:
+
+```bash
+python3 -m streamlit run app.py
+```
+
 Fetch a specific date with either script:
 
 ```bash
@@ -47,6 +53,13 @@ python3 elscript.py --date 2026-05-05
 ```
 
 Both scripts print the digest to stdout. If email is enabled and SMTP is configured, they also send it by email.
+
+The GUI lets you:
+
+- choose `Ann Arbor` or `East Lansing`
+- pick a date
+- preview the digest in the browser
+- manually send the previewed digest by email
 
 ## Configuration
 

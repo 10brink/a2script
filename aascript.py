@@ -38,6 +38,40 @@ load_dotenv(Path(__file__).parent / ".env")
 TZ = pytz.timezone("America/Detroit")
 UA = "a2-events-digest/1.0 (personal script; contact: you@example.com)"
 TIMEOUT = 25
+WEATHER_LAT = 42.2808
+WEATHER_LON = -83.7430
+
+
+WEATHER_CODES = {
+    0: "Clear",
+    1: "Mostly clear",
+    2: "Partly cloudy",
+    3: "Cloudy",
+    45: "Fog",
+    48: "Freezing fog",
+    51: "Light drizzle",
+    53: "Drizzle",
+    55: "Heavy drizzle",
+    56: "Light freezing drizzle",
+    57: "Freezing drizzle",
+    61: "Light rain",
+    63: "Rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Freezing rain",
+    71: "Light snow",
+    73: "Snow",
+    75: "Heavy snow",
+    77: "Snow grains",
+    80: "Light showers",
+    81: "Showers",
+    82: "Heavy showers",
+    85: "Light snow showers",
+    86: "Snow showers",
+    95: "Thunderstorms",
+    96: "Thunderstorms with hail",
+    99: "Thunderstorms with hail",
+}
 
 
 @dataclass
@@ -297,45 +331,6 @@ def parse_aawk(d: date) -> List[Event]:
                 return clean_location(m.group(1))
         return ""
 
-    def fetch_aawk_location(event_url: str) -> str:
-        try:
-            event_html = fetch(event_url)
-        except Exception:
-            return ""
-        event_soup = BeautifulSoup(event_html, "html.parser")
-
-        # The Events Calendar markup (common on AAWK)
-        name_el = event_soup.select_one(
-            ".tribe-events-venue-details .tribe-venue-name, "
-            ".tribe-events-meta-group-venue .tribe-venue-name, "
-            ".tribe-events-venue-details .tribe-venue"
-        )
-        name = name_el.get_text(" ", strip=True) if name_el else ""
-
-        addr_parts = []
-        for sel in [".tribe-street-address", ".tribe-locality", ".tribe-region", ".tribe-postal-code"]:
-            el = event_soup.select_one(sel)
-            if el:
-                t = el.get_text(" ", strip=True)
-                if t:
-                    addr_parts.append(t)
-        addr = ", ".join(addr_parts)
-
-        if name and addr:
-            return clean_location(f"{name}, {addr}")
-        if name:
-            return clean_location(name)
-        if addr:
-            return clean_location(addr)
-
-        venue = event_soup.select_one(".tribe-events-venue-details")
-        if venue:
-            text = venue.get_text(" ", strip=True)
-            text = re.sub(r"\b(Phone|Website|Directions)\b:\s*\S+", "", text, flags=re.I)
-            return clean_location(text)
-
-        return ""
-
     events: List[Event] = []
     for row in table.find_all("tr"):
         cells = row.find_all("td")
@@ -373,17 +368,21 @@ def parse_aawk(d: date) -> List[Event]:
                 break
 
         location = extract_row_location(cells)
-        if not location and href and href.startswith("https://annarborwithkids.com/events/"):
-            location = fetch_aawk_location(href)
 
         events.append(Event(source="Ann Arbor With Kids", title=title, when=when, location=location, url=href))
 
     return events
 
 
-def format_digest(d: date, events: List[Event]) -> str:
+def format_digest(d: date, events: List[Event], weather: str = "") -> str:
     header = f"Events for {d.strftime('%A, %B %d, %Y')} (America/Detroit)"
     out = [header, "=" * len(header), ""]
+    if weather:
+        out.append("Weather")
+        out.append("-------")
+        out.append(weather)
+        out.append("")
+
     if not events:
         out.append("No events found.")
         return "\n".join(out)
@@ -403,6 +402,89 @@ def format_digest(d: date, events: List[Event]) -> str:
             out.append(e.line())
         out.append("")
     return "\n".join(out).rstrip() + "\n"
+
+
+def _first_daily_value(daily: dict, key: str) -> object:
+    values = daily.get(key)
+    if isinstance(values, list) and values:
+        return values[0]
+    return None
+
+
+def _fmt_number(value: object, digits: int = 0) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.{digits}f}"
+    return ""
+
+
+def fetch_weather_summary(d: date) -> str:
+    """Fetch a concise daily forecast. Empty string means unavailable."""
+    params = {
+        "latitude": WEATHER_LAT,
+        "longitude": WEATHER_LON,
+        "daily": ",".join(
+            [
+                "weather_code",
+                "temperature_2m_max",
+                "temperature_2m_min",
+                "precipitation_probability_max",
+                "precipitation_sum",
+                "wind_speed_10m_max",
+            ]
+        ),
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
+        "timezone": "America/Detroit",
+        "start_date": d.isoformat(),
+        "end_date": d.isoformat(),
+    }
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params=params,
+            headers={"User-Agent": UA},
+            timeout=10,
+        )
+        r.raise_for_status()
+        daily = r.json().get("daily", {})
+    except Exception:
+        return ""
+
+    code = _first_daily_value(daily, "weather_code")
+    high = _first_daily_value(daily, "temperature_2m_max")
+    low = _first_daily_value(daily, "temperature_2m_min")
+    precip_prob = _first_daily_value(daily, "precipitation_probability_max")
+    precip_sum = _first_daily_value(daily, "precipitation_sum")
+    wind = _first_daily_value(daily, "wind_speed_10m_max")
+
+    parts = [WEATHER_CODES.get(code, "Forecast")]
+    if isinstance(high, (int, float)) and isinstance(low, (int, float)):
+        parts.append(f"high {_fmt_number(high)} F, low {_fmt_number(low)} F")
+    if isinstance(precip_prob, (int, float)):
+        parts.append(f"{_fmt_number(precip_prob)}% precip")
+    if isinstance(precip_sum, (int, float)) and precip_sum > 0:
+        parts.append(f"{_fmt_number(precip_sum, 2)} in expected")
+    if isinstance(wind, (int, float)):
+        parts.append(f"wind up to {_fmt_number(wind)} mph")
+
+    return "Ann Arbor weather: " + ", ".join(parts) + "."
+
+
+def collect_events(d: date) -> List[Event]:
+    events: List[Event] = []
+    events += parse_aadl(d)
+    events += parse_observer(d)
+    events += parse_aawk(d)
+    return events
+
+
+def build_digest(d: date) -> str:
+    return format_digest(d, collect_events(d), fetch_weather_summary(d))
+
+
+def subject_for_date(d: date) -> str:
+    return f"Today in Ann Arbor: {d.strftime('%a %b %d')}"
 
 
 def is_in_ann_arbor() -> bool:
@@ -451,6 +533,16 @@ def maybe_send_email(subject: str, body: str) -> None:
         s.send_message(msg)
 
 
+def email_enabled() -> bool:
+    return os.getenv("EMAIL_ENABLED", "true").lower() == "true"
+
+
+def should_send_for_location() -> bool:
+    if os.getenv("FORCE_SEND", "false").lower() == "true":
+        return True
+    return is_in_ann_arbor()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ann Arbor daily events digest")
     parser.add_argument(
@@ -468,28 +560,18 @@ def main() -> None:
     else:
         d = datetime.now(TZ).date()
 
-    # Skip everything if email is disabled
-    if os.getenv("EMAIL_ENABLED", "true").lower() != "true":
-        print("Email disabled — skipping.")
-        return
-
-    # Skip if not in Ann Arbor (unless force send)
-    if os.getenv("FORCE_SEND", "false").lower() != "true":
-        if not is_in_ann_arbor():
-            print("Not in Ann Arbor area — skipping.")
-            return
-    events: List[Event] = []
-    events += parse_aadl(d)
-    events += parse_observer(d)
-    events += parse_aawk(d)
-
-    digest = format_digest(d, events)
+    digest = build_digest(d)
     print(digest)
 
-    maybe_send_email(
-        subject=f"Today in Ann Arbor: {d.strftime('%a %b %d')}",
-        body=digest
-    )
+    if not email_enabled():
+        print("Email disabled — email skipped.")
+        return
+
+    if not should_send_for_location():
+        print("Not in Ann Arbor area — email skipped.")
+        return
+
+    maybe_send_email(subject=subject_for_date(d), body=digest)
 
 
 if __name__ == "__main__":
